@@ -82,6 +82,8 @@ local function setup_term_keymaps(buf)
   vim.keymap.set("t", "<S-CR>", send_newline, vim.tbl_extend("force", opts, { desc = "Newline in input" }))
   vim.keymap.set("t", "<C-PageUp>", "<cmd>tabprevious<cr>", vim.tbl_extend("force", opts, { desc = "Previous tab" }))
   vim.keymap.set("t", "<C-PageDown>", "<cmd>tabnext<cr>", vim.tbl_extend("force", opts, { desc = "Next tab" }))
+  vim.keymap.set("t", "<C-z>", function() M.zoom_toggle() end, vim.tbl_extend("force", opts, { desc = "Toggle zoom" }))
+  vim.keymap.set("n", "<C-z>", function() M.zoom_toggle() end, vim.tbl_extend("force", opts, { desc = "Toggle zoom" }))
 end
 
 ----------------------------------------------------------------------
@@ -102,10 +104,11 @@ local function make_winbar(inst, n, active)
   if inst.paths[n] then
     label = label .. " [" .. vim.fn.fnamemodify(inst.paths[n], ":t") .. "]"
   end
+  local zoom = inst.zoomed == n and " ▣" or ""
   if active then
-    return "%#FourClaudeActiveBar#  ● " .. label .. "  %*"
+    return "%#FourClaudeActiveBar#  ● " .. label .. zoom .. "  %*"
   else
-    return "%#FourClaudeInactiveBar#  ○ " .. label .. "  %*"
+    return "%#FourClaudeInactiveBar#  ○ " .. label .. zoom .. "  %*"
   end
 end
 
@@ -115,6 +118,22 @@ local function make_alert_winbar(inst, n)
     label = label .. " [" .. vim.fn.fnamemodify(inst.paths[n], ":t") .. "]"
   end
   return "%#FourClaudeAlertBar#  ⚠ " .. label .. " - INPUT NEEDED  %*"
+end
+
+----------------------------------------------------------------------
+-- Window options (shared between _launch and zoom restore)
+----------------------------------------------------------------------
+local FC_FILLCHARS = "eob: ,vert:┃,horiz:━,horizup:┻,horizdown:┳,vertleft:┫,vertright:┣,verthoriz:╋"
+
+local function apply_win_opts(win)
+  vim.wo[win].number = false
+  vim.wo[win].relativenumber = false
+  vim.wo[win].signcolumn = "no"
+  vim.wo[win].foldcolumn = "0"
+  vim.wo[win].statuscolumn = ""
+  vim.wo[win].wrap = true
+  vim.wo[win].sidescrolloff = 0
+  pcall(function() vim.wo[win].fillchars = FC_FILLCHARS end)
 end
 
 ----------------------------------------------------------------------
@@ -150,6 +169,15 @@ local function update_focus()
   local inst = current_instance()
   if not inst then return end
   local cur = vim.api.nvim_get_current_win()
+
+  -- Auto-restore zoom when user navigates to a non-zoomed pane
+  if inst.zoomed then
+    local zoomed_win = inst.wins[inst.zoomed]
+    if cur ~= zoomed_win then
+      M._zoom_restore(inst)
+    end
+  end
+
   for i, win in ipairs(inst.wins) do
     if vim.api.nvim_win_is_valid(win) then
       local active = win == cur
@@ -162,18 +190,111 @@ local function update_focus()
 end
 
 ----------------------------------------------------------------------
+-- Zoom (maximize / restore)
+----------------------------------------------------------------------
+
+--- Restore from zoom: equalize windows, reattach all terminals.
+--- Does NOT change focus – callers decide where focus should be.
+function M._zoom_restore(inst)
+  if not inst.zoomed then return end
+  inst.zoomed = nil
+
+  -- Detach the zoomed terminal before equalizing
+  local scratch = inst.zoom_scratch
+  if not scratch or not vim.api.nvim_buf_is_valid(scratch) then
+    scratch = vim.api.nvim_create_buf(false, true)
+  end
+  for _, win in ipairs(inst.wins) do
+    if vim.api.nvim_win_is_valid(win) then
+      vim.api.nvim_win_set_buf(win, scratch)
+    end
+  end
+
+  -- Equalize to final sizes first
+  vim.cmd("wincmd =")
+
+  -- Reattach all terminals at correct final sizes (one clean resize each)
+  for i, win in ipairs(inst.wins) do
+    if vim.api.nvim_win_is_valid(win) then
+      apply_win_opts(win)
+      if inst.bufs[i] and vim.api.nvim_buf_is_valid(inst.bufs[i]) then
+        vim.api.nvim_win_set_buf(win, inst.bufs[i])
+      end
+    end
+  end
+
+  pcall(vim.api.nvim_buf_delete, scratch, { force = true })
+  inst.zoom_scratch = nil
+
+  -- Reapply alert winbar for any panes that were alerted during zoom
+  for i, win in ipairs(inst.wins) do
+    if is_alert(inst, i) and vim.api.nvim_win_is_valid(win) then
+      vim.wo[win].winbar = make_alert_winbar(inst, i)
+    end
+  end
+end
+
+function M.zoom_toggle()
+  local inst = current_instance()
+  if not inst then return end
+
+  if inst.zoomed then
+    M._zoom_restore(inst)
+  else
+    -- ZOOM IN: keep all 4 windows, maximize one, minimize others
+    local cur = vim.api.nvim_get_current_win()
+    local idx = nil
+    for i, win in ipairs(inst.wins) do
+      if win == cur then idx = i; break end
+    end
+    if not idx then return end
+    inst.zoomed = idx
+
+    -- Create scratch buffer for non-zoomed placeholder windows
+    local scratch = vim.api.nvim_create_buf(false, true)
+    vim.bo[scratch].bufhidden = "wipe"
+    inst.zoom_scratch = scratch
+
+    -- Navigation keymaps on scratch so user can Ctrl+hjkl from info windows
+    local sopts = { buffer = scratch, noremap = true, silent = true }
+    vim.keymap.set("n", "<C-h>", "<cmd>wincmd h<cr>", sopts)
+    vim.keymap.set("n", "<C-j>", "<cmd>wincmd j<cr>", sopts)
+    vim.keymap.set("n", "<C-k>", "<cmd>wincmd k<cr>", sopts)
+    vim.keymap.set("n", "<C-l>", "<cmd>wincmd l<cr>", sopts)
+    vim.keymap.set("n", "<C-z>", function() M.zoom_toggle() end, sopts)
+
+    -- Detach ALL terminals (replace with scratch) to prevent any resize events
+    for i, win in ipairs(inst.wins) do
+      if vim.api.nvim_win_is_valid(win) then
+        vim.api.nvim_win_set_buf(win, scratch)
+      end
+    end
+
+    -- Maximize zoomed window (others shrink to minimum)
+    vim.api.nvim_set_current_win(cur)
+    vim.cmd("wincmd _")
+    vim.cmd("wincmd |")
+
+    -- Reattach ONLY the zoomed terminal (one clean resize to full size)
+    vim.api.nvim_win_set_buf(cur, inst.bufs[idx])
+    apply_win_opts(cur)
+  end
+  update_focus()
+end
+
+----------------------------------------------------------------------
 -- Alert system
 ----------------------------------------------------------------------
 function M._start_alert(inst, index)
   if is_alert(inst, index) then return end
   inst.buf_monitor[index].phase = "alerted"
 
-  local win = inst.wins[index]
-  if not vim.api.nvim_win_is_valid(win) then return end
-
   vim.notify("Claude " .. index .. " needs your input", vim.log.levels.WARN, {
     title = "Four Claude",
   })
+
+  local win = inst.wins[index]
+  if not vim.api.nvim_win_is_valid(win) then return end
 
   local count = 0
   if inst.flash_timers[index] then vim.fn.timer_stop(inst.flash_timers[index]) end
@@ -213,6 +334,65 @@ function M._stop_alert(inst, index)
   end
 end
 
+----------------------------------------------------------------------
+-- Input-needed detection (content-based)
+----------------------------------------------------------------------
+local spinner_chars = {
+  "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏",
+  "⣾", "⣽", "⣻", "⢿", "⡿", "⣟", "⣯", "⣷",
+  "◐", "◑", "◒", "◓",
+}
+
+local function has_spinner(line)
+  for _, ch in ipairs(spinner_chars) do
+    if line:find(ch, 1, true) then return true end
+  end
+  return false
+end
+
+local function is_prompt_line(line)
+  local trimmed = line:match("^%s*(.-)%s*$")
+  return trimmed == ">" or trimmed == "❯" or trimmed == "»" or trimmed == "$"
+end
+
+--- Analyse the last visible lines of a Claude Code terminal buffer.
+--- Returns "urgent" for permission/approval prompts, "prompt" for
+--- a regular input prompt, or false if Claude appears to still be working.
+local function detect_input_needed(lines)
+  -- Collect last non-empty lines (skip trailing blanks)
+  local meaningful = {}
+  for i = #lines, 1, -1 do
+    local line = lines[i]
+    if line and line:match("%S") then
+      table.insert(meaningful, 1, line)
+      if #meaningful >= 6 then break end
+    end
+  end
+  if #meaningful == 0 then return false end
+
+  local last = meaningful[#meaningful]
+
+  -- Active spinner on last meaningful line → still processing
+  if has_spinner(last) then return false end
+
+  local text = table.concat(meaningful, "\n")
+
+  -- Permission / approval prompts (urgent)
+  if text:match("[Aa]llow") then return "urgent" end
+  if text:match("[Dd]eny") then return "urgent" end
+  if text:match("%[Y/n%]") or text:match("%[y/N%]") then return "urgent" end
+  if text:match("%(Y%)es") or text:match("%(y%)es") then return "urgent" end
+  if text:match("%(N%)o") or text:match("%(n%)o") then return "urgent" end
+  if text:match("Do you want to proceed") then return "urgent" end
+  if text:match("Would you like to") then return "urgent" end
+  if text:match("[Aa]ccept") and text:match("[Rr]eject") then return "urgent" end
+
+  -- Regular input prompt (waiting for next user message)
+  if is_prompt_line(last) then return "prompt" end
+
+  return false
+end
+
 local function check_for_alerts()
   local now = uv.now()
   for _, inst in pairs(M.instances) do
@@ -220,9 +400,10 @@ local function check_for_alerts()
     for i, buf in ipairs(inst.bufs) do
       if not vim.api.nvim_buf_is_valid(buf) then goto continue end
       local win = inst.wins[i]
-      if not vim.api.nvim_win_is_valid(win) then goto continue end
+      local win_valid = win and vim.api.nvim_win_is_valid(win)
 
-      if win == vim.api.nvim_get_current_win() then
+      -- Skip alert for the currently focused window
+      if win_valid and win == vim.api.nvim_get_current_win() then
         if is_alert(inst, i) then M._stop_alert(inst, i) end
         inst.buf_monitor[i] = nil
         goto continue
@@ -230,7 +411,7 @@ local function check_for_alerts()
 
       local ok, line_count = pcall(vim.api.nvim_buf_line_count, buf)
       if not ok then goto continue end
-      local start = math.max(0, line_count - 8)
+      local start = math.max(0, line_count - 15)
       local ok2, lines = pcall(vim.api.nvim_buf_get_lines, buf, start, -1, false)
       if not ok2 then goto continue end
       local text = table.concat(lines, "\n")
@@ -251,9 +432,20 @@ local function check_for_alerts()
           mon.phase = "flowing"
         end
       elseif mon.phase == "flowing" then
-        if now - mon.changed_at >= M.config.alert.delay then
-          M._start_alert(inst, i)
+        local needed = detect_input_needed(lines)
+        if needed == "urgent" then
+          -- Permission prompts: alert faster (2s or configured delay, whichever is less)
+          local urgent_delay = math.min(2000, M.config.alert.delay)
+          if now - mon.changed_at >= urgent_delay then
+            M._start_alert(inst, i)
+          end
+        elseif needed == "prompt" then
+          -- Regular input prompt: use configured delay
+          if now - mon.changed_at >= M.config.alert.delay then
+            M._start_alert(inst, i)
+          end
         end
+        -- No pattern matched → Claude is likely still processing, don't alert
       end
 
       ::continue::
@@ -344,6 +536,10 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("FourClaudePresets", function()
     M.manage_presets()
   end, { desc = "Manage Four Claude presets" })
+
+  vim.api.nvim_create_user_command("FourClaudeZoom", function()
+    M.zoom_toggle()
+  end, { desc = "Toggle zoom on current Claude pane" })
 end
 
 function M.is_open()
@@ -478,6 +674,7 @@ function M._launch(paths)
     augroup = nil,
     buf_monitor = {},
     flash_timers = {},
+    zoomed = nil, -- index of zoomed pane, or nil
   }
 
   local sr = vim.o.splitright
@@ -501,18 +698,6 @@ function M._launch(paths)
   local bot_right = vim.api.nvim_get_current_win()
 
   local wins = { top_left, top_right, bot_left, bot_right }
-  local fc = "eob: ,vert:┃,horiz:━,horizup:┻,horizdown:┳,vertleft:┫,vertright:┣,verthoriz:╋"
-
-  local function apply_win_opts(win)
-    vim.wo[win].number = false
-    vim.wo[win].relativenumber = false
-    vim.wo[win].signcolumn = "no"
-    vim.wo[win].foldcolumn = "0"
-    vim.wo[win].statuscolumn = ""
-    vim.wo[win].wrap = true
-    vim.wo[win].sidescrolloff = 0
-    pcall(function() vim.wo[win].fillchars = fc end)
-  end
 
   for i, win in ipairs(wins) do
     inst.wins[i] = win
@@ -605,6 +790,11 @@ end
 -- Cleanup & close
 ----------------------------------------------------------------------
 function M._cleanup_instance(inst)
+  if inst.zoom_scratch and vim.api.nvim_buf_is_valid(inst.zoom_scratch) then
+    pcall(vim.api.nvim_buf_delete, inst.zoom_scratch, { force = true })
+  end
+  inst.zoom_scratch = nil
+  inst.zoomed = nil
   for i = 1, 4 do
     if inst.flash_timers[i] then
       vim.fn.timer_stop(inst.flash_timers[i])

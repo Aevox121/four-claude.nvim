@@ -340,6 +340,10 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("FourClaudeCloseAll", function()
     M.close_all()
   end, { desc = "Close all Four Claude instances" })
+
+  vim.api.nvim_create_user_command("FourClaudePresets", function()
+    M.manage_presets()
+  end, { desc = "Manage Four Claude presets" })
 end
 
 function M.is_open()
@@ -368,12 +372,15 @@ function M.open()
     table.insert(choices, { type = "preset", paths = preset })
   end
   table.insert(choices, { type = "custom" })
+  table.insert(choices, { type = "manage" })
 
   vim.ui.select(choices, {
     prompt = "Four Claude - select preset or customize:",
     format_item = function(item)
       if item.type == "custom" then
-        return "Custom..."
+        return "✚ New custom..."
+      elseif item.type == "manage" then
+        return "⚙ Manage presets..."
       end
       return format_preset(item.paths, root)
     end,
@@ -381,12 +388,81 @@ function M.open()
     if not choice then return end
     if choice.type == "custom" then
       do_custom()
+    elseif choice.type == "manage" then
+      M.manage_presets()
     else
       local paths = {}
       for i, p in ipairs(choice.paths) do paths[i] = p end
       save_preset(root, paths)
       M._launch(paths)
     end
+  end)
+end
+
+----------------------------------------------------------------------
+-- Preset management
+----------------------------------------------------------------------
+function M.manage_presets()
+  local root = vim.fn.getcwd()
+  local all = load_presets()
+  local presets = all[root] or {}
+
+  if #presets == 0 then
+    vim.notify("No presets for this project", vim.log.levels.INFO, { title = "Four Claude" })
+    return
+  end
+
+  local choices = {}
+  for i, preset in ipairs(presets) do
+    table.insert(choices, { index = i, paths = preset })
+  end
+
+  vim.ui.select(choices, {
+    prompt = "Manage presets - select one to edit/delete:",
+    format_item = function(item)
+      return item.index .. ". " .. format_preset(item.paths, root)
+    end,
+  }, function(choice)
+    if not choice then return end
+
+    vim.ui.select({ "Delete", "Edit", "Cancel" }, {
+      prompt = "Action for preset " .. choice.index .. ":",
+    }, function(action)
+      if not action or action == "Cancel" then return end
+
+      if action == "Delete" then
+        table.remove(presets, choice.index)
+        all[root] = #presets > 0 and presets or nil
+        save_presets_file(all)
+        vim.notify("Preset deleted", vim.log.levels.INFO, { title = "Four Claude" })
+        if #presets > 0 then
+          vim.schedule(function() M.manage_presets() end)
+        end
+
+      elseif action == "Edit" then
+        local old = choice.paths
+        local new_paths = {}
+        local function edit_path(i)
+          if i > 4 then
+            presets[choice.index] = new_paths
+            all[root] = presets
+            save_presets_file(all)
+            vim.notify("Preset updated", vim.log.levels.INFO, { title = "Four Claude" })
+            return
+          end
+          vim.ui.input({
+            prompt = "Claude " .. i .. " directory: ",
+            default = old[i] or "",
+            completion = "dir",
+          }, function(input)
+            if not input or input == "" then return end
+            new_paths[i] = vim.fn.fnamemodify(input, ":p"):gsub("[/\\]+$", "")
+            edit_path(i + 1)
+          end)
+        end
+        edit_path(1)
+      end
+    end)
   end)
 end
 

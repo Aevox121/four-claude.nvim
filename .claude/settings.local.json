@@ -1,0 +1,8 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Users/Win11/AppData/Local/nvim/lua/plugins/**)",
+      "Read(//c/Users/Win11/.config/nvim/lua/**)"
+    ]
+  }
+}

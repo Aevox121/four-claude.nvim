@@ -8,6 +8,7 @@ local defaults = {
   cmd = "claude",
   stagger_ms = 2000,
   max_presets = 5,
+  pin_key = "<leader>cp",
   alert = {
     enabled = true,
     delay = 5000,
@@ -84,6 +85,11 @@ local function setup_term_keymaps(buf)
   vim.keymap.set("t", "<C-PageDown>", "<cmd>tabnext<cr>", vim.tbl_extend("force", opts, { desc = "Next tab" }))
   vim.keymap.set("t", "<C-z>", function() M.zoom_toggle() end, vim.tbl_extend("force", opts, { desc = "Toggle zoom" }))
   vim.keymap.set("n", "<C-z>", function() M.zoom_toggle() end, vim.tbl_extend("force", opts, { desc = "Toggle zoom" }))
+  -- Diagonal jumps: top-left ↔ bottom-right
+  vim.keymap.set("t", "<C-u>", function() M.jump_to_pane(1) end, vim.tbl_extend("force", opts, { desc = "Jump to top-left pane" }))
+  vim.keymap.set("t", "<C-n>", function() M.jump_to_pane(4) end, vim.tbl_extend("force", opts, { desc = "Jump to bottom-right pane" }))
+  vim.keymap.set("n", "<C-u>", function() M.jump_to_pane(1) end, vim.tbl_extend("force", opts, { desc = "Jump to top-left pane" }))
+  vim.keymap.set("n", "<C-n>", function() M.jump_to_pane(4) end, vim.tbl_extend("force", opts, { desc = "Jump to bottom-right pane" }))
 end
 
 ----------------------------------------------------------------------
@@ -142,6 +148,52 @@ end
 local function current_instance()
   local tab = vim.api.nvim_get_current_tabpage()
   return M.instances[tab]
+end
+
+local function collect_panes()
+  local tabs = {}
+  for tab, _ in pairs(M.instances) do table.insert(tabs, tab) end
+  table.sort(tabs)
+  local items = {}
+  local num = 1
+  for _, tab in ipairs(tabs) do
+    local inst = M.instances[tab]
+    for i = 1, 4 do
+      local buf = inst.bufs[i]
+      if buf and vim.api.nvim_buf_is_valid(buf) then
+        local dirname = inst.paths[i] and vim.fn.fnamemodify(inst.paths[i], ":t") or ""
+        local label = string.format("%d. Claude %d%s", num, i,
+          dirname ~= "" and (" [" .. dirname .. "]") or "")
+        table.insert(items, { num = num, inst = inst, idx = i, label = label })
+        num = num + 1
+      end
+    end
+  end
+  return items
+end
+
+local function find_pin_context(win)
+  for _, inst in pairs(M.instances) do
+    if inst.pinned_wins then
+      for _, w in pairs(inst.pinned_wins) do
+        if w == win then
+          local buf = vim.api.nvim_win_get_buf(win)
+          for i, b in ipairs(inst.bufs) do
+            if b == buf then return inst, i end
+          end
+        end
+      end
+    end
+  end
+end
+
+function M.jump_to_pane(target)
+  local inst = current_instance()
+  if not inst then return end
+  local win = inst.wins[target]
+  if win and vim.api.nvim_win_is_valid(win) then
+    vim.api.nvim_set_current_win(win)
+  end
 end
 
 local function is_alert(inst, i)
@@ -234,7 +286,25 @@ function M._zoom_restore(inst)
   end
 end
 
+function M._pin_zoom_toggle(inst, win)
+  inst.pin_zoomed = inst.pin_zoomed or {}
+  if inst.pin_zoomed[win] then
+    vim.api.nvim_win_set_width(win, math.floor(vim.o.columns / 3))
+    inst.pin_zoomed[win] = nil
+  else
+    vim.cmd("wincmd |")
+    inst.pin_zoomed[win] = true
+  end
+end
+
 function M.zoom_toggle()
+  local cur = vim.api.nvim_get_current_win()
+  local pin_inst = find_pin_context(cur)
+  if pin_inst then
+    M._pin_zoom_toggle(pin_inst, cur)
+    return
+  end
+
   local inst = current_instance()
   if not inst then return end
 
@@ -262,6 +332,8 @@ function M.zoom_toggle()
     vim.keymap.set("n", "<C-k>", "<cmd>wincmd k<cr>", sopts)
     vim.keymap.set("n", "<C-l>", "<cmd>wincmd l<cr>", sopts)
     vim.keymap.set("n", "<C-z>", function() M.zoom_toggle() end, sopts)
+    vim.keymap.set("n", "<C-u>", function() M.jump_to_pane(1) end, sopts)
+    vim.keymap.set("n", "<C-n>", function() M.jump_to_pane(4) end, sopts)
 
     -- Detach ALL terminals (replace with scratch) to prevent any resize events
     for i, win in ipairs(inst.wins) do
@@ -280,6 +352,79 @@ function M.zoom_toggle()
     apply_win_opts(cur)
   end
   update_focus()
+end
+
+----------------------------------------------------------------------
+-- Pin (mirror pane to sidebar on another tab)
+----------------------------------------------------------------------
+function M._open_pin(inst, idx)
+  local buf = inst.bufs[idx]
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then return end
+
+  local sr = vim.o.splitright
+  vim.o.splitright = true
+  vim.cmd("vsplit")
+  vim.o.splitright = sr
+
+  local win = vim.api.nvim_get_current_win()
+  vim.api.nvim_win_set_buf(win, buf)
+  vim.api.nvim_win_set_width(win, math.floor(vim.o.columns / 3))
+  apply_win_opts(win)
+
+  local dirname = inst.paths[idx] and (" [" .. vim.fn.fnamemodify(inst.paths[idx], ":t") .. "]") or ""
+  vim.wo[win].winbar = "%#FourClaudeActiveBar#  📌 Claude " .. idx .. dirname .. "  %*"
+
+  inst.pinned_wins = inst.pinned_wins or {}
+  local cur_tab = vim.api.nvim_get_current_tabpage()
+  inst.pinned_wins[cur_tab] = win
+
+  vim.api.nvim_create_autocmd("WinClosed", {
+    group = inst.augroup,
+    pattern = tostring(win),
+    once = true,
+    callback = function()
+      if inst.pinned_wins then inst.pinned_wins[cur_tab] = nil end
+      if inst.pin_zoomed then inst.pin_zoomed[win] = nil end
+    end,
+  })
+
+  vim.cmd("startinsert")
+end
+
+function M.pin()
+  local cur_tab = vim.api.nvim_get_current_tabpage()
+  if M.instances[cur_tab] then
+    vim.notify("Already on a Four Claude tab — pin only works on other tabs",
+      vim.log.levels.WARN, { title = "Four Claude" })
+    return
+  end
+
+  -- Toggle: if this tab already has a pin, close it
+  for _, inst in pairs(M.instances) do
+    if inst.pinned_wins and inst.pinned_wins[cur_tab] then
+      local w = inst.pinned_wins[cur_tab]
+      if vim.api.nvim_win_is_valid(w) then
+        pcall(vim.api.nvim_win_close, w, true)
+      end
+      inst.pinned_wins[cur_tab] = nil
+      if inst.pin_zoomed then inst.pin_zoomed[w] = nil end
+      return
+    end
+  end
+
+  local items = collect_panes()
+  if #items == 0 then
+    vim.notify("No Four Claude instances open", vim.log.levels.WARN, { title = "Four Claude" })
+    return
+  end
+
+  vim.ui.select(items, {
+    prompt = "Pin Claude pane to sidebar:",
+    format_item = function(item) return item.label end,
+  }, function(choice)
+    if not choice then return end
+    M._open_pin(choice.inst, choice.idx)
+  end)
 end
 
 ----------------------------------------------------------------------
@@ -399,11 +544,9 @@ local function check_for_alerts()
     if not vim.api.nvim_tabpage_is_valid(inst.tab) then goto next_inst end
     for i, buf in ipairs(inst.bufs) do
       if not vim.api.nvim_buf_is_valid(buf) then goto continue end
-      local win = inst.wins[i]
-      local win_valid = win and vim.api.nvim_win_is_valid(win)
 
-      -- Skip alert for the currently focused window
-      if win_valid and win == vim.api.nvim_get_current_win() then
+      -- Skip alert if this buf is currently focused (in its pane or any pin window)
+      if vim.api.nvim_win_get_buf(vim.api.nvim_get_current_win()) == buf then
         if is_alert(inst, i) then M._stop_alert(inst, i) end
         inst.buf_monitor[i] = nil
         goto continue
@@ -540,6 +683,17 @@ function M.setup(opts)
   vim.api.nvim_create_user_command("FourClaudeZoom", function()
     M.zoom_toggle()
   end, { desc = "Toggle zoom on current Claude pane" })
+
+  vim.api.nvim_create_user_command("FourClaudePin", function()
+    M.pin()
+  end, { desc = "Pin/unpin a Claude pane to the current tab's right sidebar" })
+
+  if M.config.pin_key and M.config.pin_key ~= "" then
+    vim.keymap.set("n", M.config.pin_key, function() M.pin() end, {
+      desc = "Four Claude: pin/unpin pane to sidebar",
+      silent = true,
+    })
+  end
 end
 
 function M.is_open()
@@ -675,6 +829,8 @@ function M._launch(paths)
     buf_monitor = {},
     flash_timers = {},
     zoomed = nil, -- index of zoomed pane, or nil
+    pinned_wins = {}, -- tab_handle -> pin window id
+    pin_zoomed = {},  -- pin window id -> bool (is full-width zoomed)
   }
 
   local sr = vim.o.splitright
@@ -776,6 +932,31 @@ function M._launch(paths)
       vim.defer_fn(function()
         launch_term(index + 1)
       end, M.config.stagger_ms)
+    else
+      -- Final alignment: detach terminals → equalize → reattach (ConPTY-safe)
+      -- Two passes: quick fix after shells open, then after Claude Code TUI stabilizes
+      local function do_final_alignment()
+        if not vim.api.nvim_tabpage_is_valid(inst.tab) then return end
+        local scratch = vim.api.nvim_create_buf(false, true)
+        for _, w in ipairs(inst.wins) do
+          if vim.api.nvim_win_is_valid(w) then
+            vim.api.nvim_win_set_buf(w, scratch)
+          end
+        end
+        vim.cmd("wincmd =")
+        for ii, w in ipairs(inst.wins) do
+          if vim.api.nvim_win_is_valid(w) and inst.bufs[ii] and vim.api.nvim_buf_is_valid(inst.bufs[ii]) then
+            vim.api.nvim_win_set_buf(w, inst.bufs[ii])
+            apply_win_opts(w)
+          end
+        end
+        pcall(vim.api.nvim_buf_delete, scratch, { force = true })
+        update_focus()
+      end
+      -- Pass 1: immediate fix after shell creation
+      vim.defer_fn(do_final_alignment, 300)
+      -- Pass 2: after Claude Code TUI has started and stabilized in all panes
+      vim.defer_fn(do_final_alignment, 4000)
     end
   end
 
@@ -790,6 +971,15 @@ end
 -- Cleanup & close
 ----------------------------------------------------------------------
 function M._cleanup_instance(inst)
+  if inst.pinned_wins then
+    for _, w in pairs(inst.pinned_wins) do
+      if vim.api.nvim_win_is_valid(w) then
+        pcall(vim.api.nvim_win_close, w, true)
+      end
+    end
+    inst.pinned_wins = nil
+  end
+  inst.pin_zoomed = nil
   if inst.zoom_scratch and vim.api.nvim_buf_is_valid(inst.zoom_scratch) then
     pcall(vim.api.nvim_buf_delete, inst.zoom_scratch, { force = true })
   end

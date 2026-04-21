@@ -289,7 +289,7 @@ end
 function M._pin_zoom_toggle(inst, win)
   inst.pin_zoomed = inst.pin_zoomed or {}
   if inst.pin_zoomed[win] then
-    vim.api.nvim_win_set_width(win, math.floor(vim.o.columns / 3))
+    vim.api.nvim_win_set_width(win, math.floor(vim.o.columns / 2))
     inst.pin_zoomed[win] = nil
   else
     vim.cmd("wincmd |")
@@ -368,7 +368,7 @@ function M._open_pin(inst, idx)
 
   local win = vim.api.nvim_get_current_win()
   vim.api.nvim_win_set_buf(win, buf)
-  vim.api.nvim_win_set_width(win, math.floor(vim.o.columns / 3))
+  vim.api.nvim_win_set_width(win, math.floor(vim.o.columns / 2))
   apply_win_opts(win)
 
   local dirname = inst.paths[idx] and (" [" .. vim.fn.fnamemodify(inst.paths[idx], ":t") .. "]") or ""

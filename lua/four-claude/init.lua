@@ -378,6 +378,18 @@ function M._open_pin(inst, idx)
   local cur_tab = vim.api.nvim_get_current_tabpage()
   inst.pinned_wins[cur_tab] = win
 
+  local enter_au = vim.api.nvim_create_autocmd("WinEnter", {
+    group = inst.augroup,
+    callback = function()
+      if not vim.api.nvim_win_is_valid(win) then return end
+      if vim.api.nvim_get_current_win() ~= win then return end
+      local b = vim.api.nvim_win_get_buf(win)
+      if vim.bo[b].buftype == "terminal" then
+        vim.cmd("startinsert")
+      end
+    end,
+  })
+
   vim.api.nvim_create_autocmd("WinClosed", {
     group = inst.augroup,
     pattern = tostring(win),
@@ -385,6 +397,7 @@ function M._open_pin(inst, idx)
     callback = function()
       if inst.pinned_wins then inst.pinned_wins[cur_tab] = nil end
       if inst.pin_zoomed then inst.pin_zoomed[win] = nil end
+      pcall(vim.api.nvim_del_autocmd, enter_au)
     end,
   })
 

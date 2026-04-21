@@ -85,11 +85,11 @@ local function setup_term_keymaps(buf)
   vim.keymap.set("t", "<C-PageDown>", "<cmd>tabnext<cr>", vim.tbl_extend("force", opts, { desc = "Next tab" }))
   vim.keymap.set("t", "<C-z>", function() M.zoom_toggle() end, vim.tbl_extend("force", opts, { desc = "Toggle zoom" }))
   vim.keymap.set("n", "<C-z>", function() M.zoom_toggle() end, vim.tbl_extend("force", opts, { desc = "Toggle zoom" }))
-  -- Diagonal jumps: top-left ↔ bottom-right
-  vim.keymap.set("t", "<C-u>", function() M.jump_to_pane(1) end, vim.tbl_extend("force", opts, { desc = "Jump to top-left pane" }))
-  vim.keymap.set("t", "<C-n>", function() M.jump_to_pane(4) end, vim.tbl_extend("force", opts, { desc = "Jump to bottom-right pane" }))
-  vim.keymap.set("n", "<C-u>", function() M.jump_to_pane(1) end, vim.tbl_extend("force", opts, { desc = "Jump to top-left pane" }))
-  vim.keymap.set("n", "<C-n>", function() M.jump_to_pane(4) end, vim.tbl_extend("force", opts, { desc = "Jump to bottom-right pane" }))
+  -- Diagonal toggles: <C-w>u on main diagonal (TL↔BR), <C-w>n on anti-diagonal (TR↔BL)
+  vim.keymap.set("t", "<C-w>u", function() M.jump_diagonal("main") end, vim.tbl_extend("force", opts, { desc = "Toggle main diagonal (TL↔BR)" }))
+  vim.keymap.set("t", "<C-w>n", function() M.jump_diagonal("anti") end, vim.tbl_extend("force", opts, { desc = "Toggle anti-diagonal (TR↔BL)" }))
+  vim.keymap.set("n", "<C-w>u", function() M.jump_diagonal("main") end, vim.tbl_extend("force", opts, { desc = "Toggle main diagonal (TL↔BR)" }))
+  vim.keymap.set("n", "<C-w>n", function() M.jump_diagonal("anti") end, vim.tbl_extend("force", opts, { desc = "Toggle anti-diagonal (TR↔BL)" }))
 end
 
 ----------------------------------------------------------------------
@@ -187,9 +187,22 @@ local function find_pin_context(win)
   end
 end
 
-function M.jump_to_pane(target)
+function M.jump_diagonal(diag)
   local inst = current_instance()
   if not inst then return end
+  local cur = vim.api.nvim_get_current_win()
+  local cur_idx
+  for i, w in ipairs(inst.wins) do
+    if w == cur then cur_idx = i; break end
+  end
+
+  local target
+  if diag == "main" then
+    target = (cur_idx == 1) and 4 or 1
+  else
+    target = (cur_idx == 2) and 3 or 2
+  end
+
   local win = inst.wins[target]
   if win and vim.api.nvim_win_is_valid(win) then
     vim.api.nvim_set_current_win(win)
@@ -332,8 +345,8 @@ function M.zoom_toggle()
     vim.keymap.set("n", "<C-k>", "<cmd>wincmd k<cr>", sopts)
     vim.keymap.set("n", "<C-l>", "<cmd>wincmd l<cr>", sopts)
     vim.keymap.set("n", "<C-z>", function() M.zoom_toggle() end, sopts)
-    vim.keymap.set("n", "<C-u>", function() M.jump_to_pane(1) end, sopts)
-    vim.keymap.set("n", "<C-n>", function() M.jump_to_pane(4) end, sopts)
+    vim.keymap.set("n", "<C-w>u", function() M.jump_diagonal("main") end, sopts)
+    vim.keymap.set("n", "<C-w>n", function() M.jump_diagonal("anti") end, sopts)
 
     -- Detach ALL terminals (replace with scratch) to prevent any resize events
     for i, win in ipairs(inst.wins) do

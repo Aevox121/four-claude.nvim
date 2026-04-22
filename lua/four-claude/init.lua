@@ -726,6 +726,20 @@ function M.is_open()
   return current_instance() ~= nil
 end
 
+--- Lualine-friendly status string.
+--- Returns "" when no live instances, "● Claude" for one, "● Claude×N" for more.
+function M.status()
+  local count = 0
+  for _, inst in pairs(M.instances) do
+    if inst.tab and vim.api.nvim_tabpage_is_valid(inst.tab) then
+      count = count + 1
+    end
+  end
+  if count == 0 then return "" end
+  if count == 1 then return "● Claude" end
+  return "● Claude×" .. count
+end
+
 function M.open()
   local root = vim.fn.getcwd()
   local all_presets = load_presets()
@@ -940,6 +954,10 @@ function M._launch(paths)
     end, 500)
     local buf = vim.api.nvim_get_current_buf()
     inst.bufs[index] = buf
+    -- Keep fourclaude terminals out of the global listed-buffer pool so
+    -- bufferline and Snacks.bufdelete (which picks replacement buffers from
+    -- listed bufs) don't pull them into non-fourclaude tabs.
+    vim.bo[buf].buflisted = false
     setup_term_keymaps(buf)
     apply_win_opts(win)
     vim.cmd("wincmd =")
@@ -1033,16 +1051,35 @@ function M._cleanup_instance(inst)
   maybe_stop_poll_timer()
 end
 
+-- Close the fourclaude tab first, then cleanup. If we delete terminal buffers
+-- while their windows still exist, Neovim auto-creates a listed [No Name]
+-- buffer to fill the vacated windows and leaks it into the buffer list.
+-- Closing the tab first destroys the windows so no replacement is needed.
+-- The TabClosed autocmd will also invoke _cleanup_instance; _cleanup_instance
+-- is effectively idempotent (every branch guards on is_valid / nil), so the
+-- redundant call in the fallback path is safe.
+local function close_tab_and_cleanup(inst)
+  local tab = inst.tab
+  if tab and vim.api.nvim_tabpage_is_valid(tab) then
+    local ok, tab_nr = pcall(vim.api.nvim_tabpage_get_number, tab)
+    if ok then
+      pcall(vim.cmd, tab_nr .. "tabclose")
+      return
+    end
+  end
+  M._cleanup_instance(inst)
+end
+
 function M.close()
   local inst = current_instance()
   if not inst then return end
-  M._cleanup_instance(inst)
+  close_tab_and_cleanup(inst)
 end
 
 function M.close_all()
   local all = vim.tbl_values(M.instances)
   for _, inst in ipairs(all) do
-    M._cleanup_instance(inst)
+    close_tab_and_cleanup(inst)
   end
   maybe_stop_poll_timer()
 end

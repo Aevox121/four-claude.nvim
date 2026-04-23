@@ -50,14 +50,30 @@ end
 -- tab is found do we run the picker and spawn one. This also auto-corrects
 -- any drift in M._zellij_tab_alive from manual zellij-side manipulation.
 local function zellij_open()
-  zellij.run_action({ "go-to-tab-name", zellij.TAB_NAME }, function(found)
-    if found then
-      vim.schedule(function() M._zellij_tab_alive = true end)
+  zellij.has_tab(function(found, err)
+    if err then
+      vim.schedule(function()
+        notify_err(err)
+      end)
       return
     end
+
+    if found then
+      zellij.run_action({ "go-to-tab-name", zellij.TAB_NAME }, function(ok, stderr)
+        vim.schedule(function()
+          if ok then
+            M._zellij_tab_alive = true
+          else
+            notify_err("go-to-tab-name failed: " .. (stderr ~= "" and stderr or "unknown"))
+          end
+        end)
+      end)
+      return
+    end
+
     vim.schedule(function()
       legacy.pick_paths(function(paths)
-        zellij.spawn(paths, function(ok, stderr)
+        zellij.spawn(paths, M.config.cmd, function(ok, stderr)
           vim.schedule(function()
             if not ok then
               notify_err("new-tab failed: " .. (stderr ~= "" and stderr or "unknown"))
@@ -104,6 +120,14 @@ local function register_zellij_commands()
   ucmd("FourClaudeInstallNotifications", function()
     require("four-claude.notifications").install()
   end, { desc = "Install OS-native Claude Code notification hooks" })
+  ucmd("FourClaudePin", function()
+    vim.notify("Four Claude: " .. zellij.UNSUPPORTED_MSG,
+      vim.log.levels.INFO, { title = "Four Claude" })
+  end, { desc = "Pin is not supported on the zellij backend" })
+  ucmd("FourClaudeZoom", function()
+    vim.notify("Four Claude: use zellij fullscreen instead (Alt+f by default)",
+      vim.log.levels.INFO, { title = "Four Claude" })
+  end, { desc = "Zoom is handled by zellij on the zellij backend" })
 end
 
 --- Public API ---------------------------------------------------------------

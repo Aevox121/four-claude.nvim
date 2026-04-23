@@ -101,6 +101,9 @@ local function register_zellij_commands()
        { desc = "Close the fourclaude zellij tab (alias)" })
   ucmd("FourClaudePresets", function() legacy.manage_presets() end,
        { desc = "Manage Four Claude presets" })
+  ucmd("FourClaudeInstallNotifications", function()
+    require("four-claude.notifications").install()
+  end, { desc = "Install OS-native Claude Code notification hooks" })
 end
 
 --- Public API ---------------------------------------------------------------

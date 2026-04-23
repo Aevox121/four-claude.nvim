@@ -2,13 +2,17 @@
 
 Manage a 4-pane Claude Code workspace from Neovim, with two backends:
 
-- **zellij path** (auto on macOS / Linux when `$ZELLIJ` is set and `zellij` is on PATH)
-  — creates a tab named `fourclaude` in the current zellij session, 4 panes each
-  running `claude` in a chosen directory. Rendering and resize handled natively
-  by zellij.
-- **legacy path** (fallback on Windows, or anywhere without zellij) — 4 nvim
-  `:terminal` buffers in a 2×2 grid inside a new nvim tabpage, with per-pane
-  winbar, zoom, pin-to-sidebar, and in-nvim input-needed alerts.
+- **zellij path** (auto when `zellij` is on PATH) — opens a new nvim tab
+  containing a single `:terminal` buffer that runs an ephemeral
+  [zellij](https://zellij.dev/) session laid out as a 2×2 grid of `claude`
+  processes. Zellij handles TUI rendering and resize inside the terminal
+  buffer, so Claude Code stops garbling on window resize. Because
+  fourclaude is still a nvim `:terminal`, in-nvim integrations such as
+  `TermEnter`-based IME switchers and the lualine indicator still work.
+- **legacy path** (fallback when zellij isn't installed, i.e. Windows) —
+  4 nvim `:terminal` buffers in a 2×2 grid inside a new nvim tabpage,
+  with per-pane winbar, zoom, pin-to-sidebar, and in-nvim input-needed
+  alerts.
 
 Backend is selected automatically; override with `use_zellij = true | false` in setup.
 
@@ -16,7 +20,11 @@ Backend is selected automatically; override with `use_zellij = true | false` in 
 
 - Neovim ≥ 0.10
 - Claude Code CLI (`claude`) on PATH
-- For the zellij path: `zellij ≥ 0.40` on PATH, nvim running inside a zellij session
+- For the zellij path: `zellij ≥ 0.40` on PATH
+
+You do **not** need to run nvim inside an outer zellij session. The
+embedded zellij runs standalone; the plugin clears `$ZELLIJ` via `env -u
+ZELLIJ` before launching to bypass zellij's nesting guard.
 
 ## Installation (lazy.nvim)
 
@@ -39,11 +47,12 @@ Backend is selected automatically; override with `use_zellij = true | false` in 
 
 | Command | zellij path | legacy path |
 |---------|---|---|
-| `:FourClaude` / `:FourClaudeToggle` | Ensure the `fourclaude` zellij tab is focused (create via preset picker if missing) | Open / toggle the 4-pane nvim tab |
-| `:FourClaudeClose` / `:FourClaudeCloseAll` | Close the `fourclaude` zellij tab (SIGHUPs the 4 claudes) | Close current tab's terminals |
+| `:FourClaude` / `:FourClaudeToggle` | Create / focus the fourclaude nvim tab (preset picker on first open) | Open / toggle the 4-pane nvim tab |
+| `:FourClaudeClose` | Close the fourclaude tab (SIGHUPs zellij, takes out the 4 claudes) | Close current tab's terminals |
+| `:FourClaudeCloseAll` | Close all fourclaude tabs | same |
 | `:FourClaudePresets` | Manage preset 4-directory lists for the current cwd | same |
-| `:FourClaudeInstallNotifications` | Install OS-native Claude Code `Notification` / `Stop` hooks (macOS `osascript`, Linux `notify-send`) | — |
-| `:FourClaudeZoom` / `:FourClaudePin` | — | Zoom current pane / pin a pane to sidebar |
+| `:FourClaudeInstallNotifications` | Install OS-native Claude Code `Notification` / `Stop` hooks | — |
+| `:FourClaudeZoom` / `:FourClaudePin` | Hint (use zellij's `Alt+f` / `Ctrl+p n` instead) | Zoom current pane / pin a pane to sidebar |
 
 ## Lualine indicator
 
@@ -76,62 +85,76 @@ Shows `● Claude` in the statusline whenever fourclaude is alive.
 brew install zellij
 ```
 
-Configure your terminal emulator to launch zellij on startup. For Ghostty:
+No outer zellij session required. You can start nvim however you want —
+directly from the terminal, via tmux, or inside your usual zellij — and
+`<leader>C` will open its own embedded zellij inside a `:terminal`.
 
-```
-command = zellij attach -c -s main
-```
-
-Then run `nvim` inside the zellij session as usual.
-
-### First-time setup
-
-Run once:
+### First-time setup (optional)
 
 ```vim
 :FourClaudeInstallNotifications
 ```
 
-This writes `Notification` and `Stop` hooks into `~/.claude/settings.json`
-so you get macOS notifications when Claude needs input or finishes. Idempotent.
+Writes `Notification` and `Stop` hooks into `~/.claude/settings.json`
+so you get macOS notifications when Claude needs input or finishes.
+Idempotent.
 
 ### Daily use
 
-- `<leader>C` from anywhere → focuses the `fourclaude` tab, creating it (with
-  preset picker) if it doesn't exist.
-- When focused on fourclaude, use zellij's tab keys (`Alt+h`/`Alt+l` by default)
-  to switch back to nvim.
-- `:FourClaudeClose` to tear down. Four claude processes get SIGHUP.
+- `<leader>C` from anywhere → focuses the fourclaude tab, creating it
+  (with preset picker) if it doesn't exist. Nvim lands you in terminal
+  mode on the embedded zellij.
+- Leave terminal mode with `<C-\><C-n>` to use nvim navigation.
+- Inside fourclaude, use zellij's native keys:
+  - `Ctrl+p` + `h/j/k/l` — switch between the 4 claude panes
+  - `Alt+f` (or `Ctrl+p` + `f`) — zoom a pane
+  - `Ctrl+p` + `n` — split a fifth pane
+  - `Ctrl+q` — quit the embedded zellij (also closes the tab)
+- `:FourClaudeClose` to tear down from outside terminal mode.
 
-### Features dropped on the zellij path
+### Alt-as-Meta on mac
 
-Because the 4 panes live inside zellij rather than as nvim buffers, these
-legacy features are replaced by zellij-native equivalents:
+Zellij's `Alt+…` shortcuts only reach the embedded zellij if your outer
+terminal forwards Option as Meta. For Ghostty:
+
+```
+macos-option-as-alt = true
+```
+
+If you don't want to configure this, the `Ctrl+p` / `Ctrl+t` mode
+prefixes work without any terminal-side setup.
+
+### Features scoped differently on the zellij path
+
+Per-claude-pane nvim operations (zoom, pin-to-sidebar, diagonal jumps,
+per-pane winbar, input-needed alert) don't apply on the zellij path
+because fourclaude is one nvim `:terminal`, not four. Use zellij's
+native equivalents instead:
 
 | Legacy | zellij replacement |
 |---|---|
-| Per-pane winbar (`● Claude N [dir]`) | zellij status bar |
+| Per-pane winbar (`● Claude N [dir]`) | zellij's tab-bar + status-bar (rendered inside the terminal) |
 | Zoom toggle (`<C-z>`) | zellij `Alt+f` |
 | Diagonal pane jumps (`<C-u>` / `<C-n>`) | zellij `Ctrl+p` + `hjkl` |
-| Pin to sidebar (`<leader>cp`) | Split inside zellij (`Ctrl+p` + `n`) or just switch tabs |
+| Pin to sidebar (`<leader>cp`) | zellij `Ctrl+p` + `n` (splits a fifth pane in the same tab) |
 | Input-needed alert (winbar flash) | OS notification via `:FourClaudeInstallNotifications` |
 
 ## Windows / legacy path
 
-Behavior on Windows is unchanged from pre-v2. All legacy features (4 nvim
-terminals, winbar, zoom, pin, in-nvim alerts) work as before. The zellij
-dispatcher stays dormant because `$ZELLIJ` is never set.
+Behavior on Windows is unchanged. All legacy features (4 nvim
+terminals, winbar, zoom, pin, in-nvim alerts) work as before. The
+zellij dispatcher stays dormant because `zellij` isn't installed.
 
 ## Architecture
 
 ```
 lua/four-claude/
-├── init.lua           Dispatcher. Reads $ZELLIJ and picks a backend.
-├── zellij.lua         zellij-path backend: KDL render + zellij action calls.
-├── legacy.lua         legacy-path backend: 4 nvim :terminal in a 2×2 grid.
+├── init.lua           Dispatcher. Picks backend by `zellij` availability.
+├── zellij.lua         v3 backend: nvim :terminal hosting an ephemeral zellij.
+├── legacy.lua         Legacy backend: 4 nvim :terminal in a 2×2 grid.
 └── notifications.lua  ~/.claude/settings.json hook installer.
 ```
 
-Preset picker (`pick_paths`) and preset storage live in `legacy.lua` and are
-shared by both paths — the zellij path reuses them and just swaps the launch
-backend.
+Preset picker (`pick_paths`) and preset storage live in `legacy.lua` and
+are shared by both paths — the zellij path reuses them for directory
+selection and just swaps the launch backend.

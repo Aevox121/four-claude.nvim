@@ -1,14 +1,17 @@
 -- four-claude.nvim entry point.
 --
--- Dispatches between two implementations:
---   * zellij path  — fourclaude as a zellij tab in the current session,
---                    4 claude panes. Activated when $ZELLIJ is set and
---                    `zellij` is on PATH.
---   * legacy path  — 4 nvim :terminal buffers in a 2×2 grid (original).
+-- Dispatches between two backends:
+--   * zellij path — `:terminal` containing an embedded ephemeral zellij
+--                   running a 2×2 layout of `claude` panes. Activated when
+--                   `zellij` is on PATH; works regardless of whether nvim
+--                   itself is started inside an outer zellij session.
+--   * legacy path — 4 native nvim `:terminal` buffers in a 2×2 grid.
+--                   Used on Windows and anywhere zellij isn't installed.
 --
--- The zellij path reuses the legacy module's preset picker and config store,
--- but swaps out the launch backend. Command registration, lualine status,
--- and public API all branch on `use_zellij()`.
+-- The zellij path keeps fourclaude inside nvim's sights (TermEnter fires,
+-- ch-ime and other nvim features still work) while offloading TUI resize
+-- to zellij so Claude Code stops garbling on window resize. The legacy
+-- path is preserved for platforms without zellij.
 
 local zellij = require("four-claude.zellij")
 local legacy = require("four-claude.legacy")
@@ -16,26 +19,17 @@ local legacy = require("four-claude.legacy")
 local M = {}
 
 local defaults = {
-  -- nil = auto-detect (zellij iff $ZELLIJ set and binary available)
+  -- nil = auto-detect (zellij iff the binary is available)
   use_zellij = nil,
 }
 
 M.config = {}
 
--- Event-tracked existence of the fourclaude zellij tab. Updated when we run
--- spawn / close. May drift if the user manipulates the tab directly in
--- zellij (e.g. Ctrl+t x); lualine status tolerates this.
-M._zellij_tab_alive = false
-
-local function zellij_env_ok()
-  return (select(1, zellij.check_env())) == true
-end
-
 local function use_zellij()
   local opt = M.config.use_zellij
   if opt == false then return false end
-  if opt == true then return zellij_env_ok() end
-  return zellij_env_ok() -- auto
+  if opt == true then return zellij.available() end
+  return zellij.available()
 end
 
 local function notify_err(msg)
@@ -43,91 +37,68 @@ local function notify_err(msg)
              { title = "Four Claude" })
 end
 
--- Zellij-path open: "ensure fourclaude tab is focused".
---
--- First probes via `go-to-tab-name`; if the tab already exists this is a
--- cheap focus-switch and no preset picker appears. Only when no fourclaude
--- tab is found do we run the picker and spawn one. This also auto-corrects
--- any drift in M._zellij_tab_alive from manual zellij-side manipulation.
+-- Zellij-path open: focus the existing fourclaude tab if any, else run
+-- the preset picker and spawn a new one.
 local function zellij_open()
-  zellij.has_tab(function(found, err)
-    if err then
-      vim.schedule(function()
-        notify_err(err)
-      end)
-      return
-    end
-
-    if found then
-      zellij.run_action({ "go-to-tab-name", zellij.TAB_NAME }, function(ok, stderr)
-        vim.schedule(function()
-          if ok then
-            M._zellij_tab_alive = true
-          else
-            notify_err("go-to-tab-name failed: " .. (stderr ~= "" and stderr or "unknown"))
-          end
-        end)
-      end)
-      return
-    end
-
-    vim.schedule(function()
-      legacy.pick_paths(function(paths)
-        zellij.spawn(paths, M.config.cmd, function(ok, stderr)
-          vim.schedule(function()
-            if not ok then
-              notify_err("new-tab failed: " .. (stderr ~= "" and stderr or "unknown"))
-              return
-            end
-            M._zellij_tab_alive = true
-          end)
-        end)
-      end)
-    end)
+  local tab = zellij.find_instance()
+  if tab then
+    vim.api.nvim_set_current_tabpage(tab)
+    vim.cmd("startinsert")
+    return
+  end
+  legacy.pick_paths(function(paths)
+    local _, err = zellij.open(paths, legacy.config.cmd or "claude")
+    if err then notify_err(err) end
   end)
 end
 
--- Zellij-path close: switch to the fourclaude tab (if any) then close it.
 local function zellij_close()
-  zellij.run_action({ "go-to-tab-name", zellij.TAB_NAME }, function(found)
-    if not found then
-      M._zellij_tab_alive = false -- nothing to close; clear stale flag
-      return
-    end
-    zellij.run_action({ "close-tab" }, function(ok, stderr)
-      vim.schedule(function()
-        if ok then
-          M._zellij_tab_alive = false
-        else
-          notify_err("close-tab failed: " .. stderr)
-        end
-      end)
-    end)
-  end)
+  local cur = vim.api.nvim_get_current_tabpage()
+  if zellij.is_fourclaude_tab(cur) then
+    zellij.close(cur)
+    return
+  end
+  zellij.close(zellij.find_instance())
 end
 
 local function register_zellij_commands()
   local ucmd = vim.api.nvim_create_user_command
-  ucmd("FourClaude", zellij_open, { desc = "Open fourclaude (zellij tab)" })
+  ucmd("FourClaude", zellij_open, { desc = "Open fourclaude (embedded zellij)" })
   ucmd("FourClaudeToggle", zellij_open,
-       { desc = "Show fourclaude (zellij tab) — creates if missing" })
+       { desc = "Open / focus fourclaude (creates if missing)" })
   ucmd("FourClaudeClose", zellij_close,
-       { desc = "Close the fourclaude zellij tab" })
-  ucmd("FourClaudeCloseAll", zellij_close,
-       { desc = "Close the fourclaude zellij tab (alias)" })
+       { desc = "Close the fourclaude tab (SIGHUPs zellij + 4 claudes)" })
+  ucmd("FourClaudeCloseAll", function() zellij.close_all() end,
+       { desc = "Close all fourclaude tabs" })
   ucmd("FourClaudePresets", function() legacy.manage_presets() end,
        { desc = "Manage Four Claude presets" })
   ucmd("FourClaudeInstallNotifications", function()
     require("four-claude.notifications").install()
   end, { desc = "Install OS-native Claude Code notification hooks" })
   ucmd("FourClaudePin", function()
-    vim.notify("Four Claude: " .. zellij.UNSUPPORTED_MSG,
-      vim.log.levels.INFO, { title = "Four Claude" })
-  end, { desc = "Pin is not supported on the zellij backend" })
+    vim.notify("Four Claude: pin granularity isn't available on the zellij backend. " ..
+               "Inside fourclaude use zellij's `Ctrl+p n` to split a fifth pane.",
+               vim.log.levels.INFO, { title = "Four Claude" })
+  end, { desc = "Pin is handled by zellij on the zellij backend" })
   ucmd("FourClaudeZoom", function()
-    vim.notify("Four Claude: use zellij fullscreen instead (Alt+f by default)",
-      vim.log.levels.INFO, { title = "Four Claude" })
+    vim.notify("Four Claude: zoom granularity isn't available on the zellij backend. " ..
+               "Inside fourclaude use zellij's `Alt+f` (or `Ctrl+p f`) to zoom a pane.",
+               vim.log.levels.INFO, { title = "Four Claude" })
   end, { desc = "Zoom is handled by zellij on the zellij backend" })
+end
+
+-- Drop straight into terminal mode whenever the user lands on a fourclaude
+-- tab so keys reach the embedded zellij without an extra `i` press.
+local function register_zellij_autocmds()
+  local grp = vim.api.nvim_create_augroup("FourClaudeZellij", { clear = true })
+  vim.api.nvim_create_autocmd("TabEnter", {
+    group = grp,
+    callback = function()
+      if zellij.is_fourclaude_tab(vim.api.nvim_get_current_tabpage()) then
+        vim.cmd("startinsert")
+      end
+    end,
+  })
 end
 
 --- Public API ---------------------------------------------------------------
@@ -136,12 +107,13 @@ function M.setup(opts)
   opts = opts or {}
   M.config = vim.tbl_deep_extend("force", defaults, opts)
 
-  -- Legacy's preset helpers (reused by the zellij path) read legacy.config,
+  -- Legacy's preset helpers (shared by both backends) read legacy.config,
   -- so always initialise it.
   legacy.setup_config(opts)
 
   if use_zellij() then
     register_zellij_commands()
+    register_zellij_autocmds()
     vim.schedule(function() zellij.cleanup_stale_kdl() end)
   else
     legacy.setup(opts)
@@ -159,7 +131,7 @@ function M.close()
 end
 
 function M.close_all()
-  if use_zellij() then return zellij_close() end
+  if use_zellij() then return zellij.close_all() end
   return legacy.close_all()
 end
 
@@ -169,14 +141,12 @@ function M.toggle()
 end
 
 function M.is_open()
-  if use_zellij() then return M._zellij_tab_alive end
+  if use_zellij() then return zellij.is_open() end
   return legacy.is_open()
 end
 
 function M.status()
-  if use_zellij() then
-    return M._zellij_tab_alive and "● Claude" or ""
-  end
+  if use_zellij() then return zellij.status() end
   return legacy.status()
 end
 

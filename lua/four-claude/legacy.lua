@@ -682,8 +682,15 @@ end
 ----------------------------------------------------------------------
 -- Setup & commands
 ----------------------------------------------------------------------
-function M.setup(opts)
+-- Initialises config only (no highlights / commands / keymaps). Exposed so
+-- the init.lua dispatcher can share this config with the zellij path (which
+-- still uses legacy.pick_paths / preset helpers that read M.config).
+function M.setup_config(opts)
   M.config = vim.tbl_deep_extend("force", defaults, opts or {})
+end
+
+function M.setup(opts)
+  M.setup_config(opts)
   setup_highlights()
 
   vim.api.nvim_create_user_command("FourClaude", function()
@@ -740,7 +747,11 @@ function M.status()
   return "● Claude×" .. count
 end
 
-function M.open()
+-- Runs the preset/custom picker UI and invokes callback(paths) once the user
+-- has committed to 4 paths. Does nothing if the user cancels. Shared between
+-- the legacy path (callback = M._launch) and the zellij path (callback =
+-- zellij_spawn) in init.lua.
+function M.pick_paths(callback)
   local root = vim.fn.getcwd()
   local all_presets = load_presets()
   local presets = all_presets[root] or {}
@@ -748,7 +759,7 @@ function M.open()
   local function do_custom()
     pick_paths_custom(function(paths)
       save_preset(root, paths)
-      M._launch(paths)
+      callback(paths)
     end)
   end
 
@@ -784,9 +795,13 @@ function M.open()
       local paths = {}
       for i, p in ipairs(choice.paths) do paths[i] = p end
       save_preset(root, paths)
-      M._launch(paths)
+      callback(paths)
     end
   end)
+end
+
+function M.open()
+  M.pick_paths(M._launch)
 end
 
 ----------------------------------------------------------------------

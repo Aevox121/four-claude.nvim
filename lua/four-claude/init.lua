@@ -43,16 +43,29 @@ local function notify_err(msg)
              { title = "Four Claude" })
 end
 
--- Zellij-path open: pick paths → spawn a fourclaude tab.
+-- Zellij-path open: "ensure fourclaude tab is focused".
+--
+-- First probes via `go-to-tab-name`; if the tab already exists this is a
+-- cheap focus-switch and no preset picker appears. Only when no fourclaude
+-- tab is found do we run the picker and spawn one. This also auto-corrects
+-- any drift in M._zellij_tab_alive from manual zellij-side manipulation.
 local function zellij_open()
-  legacy.pick_paths(function(paths)
-    zellij.spawn(paths, function(ok, stderr)
-      vim.schedule(function()
-        if not ok then
-          notify_err("new-tab failed: " .. (stderr ~= "" and stderr or "unknown"))
-          return
-        end
-        M._zellij_tab_alive = true
+  zellij.run_action({ "go-to-tab-name", zellij.TAB_NAME }, function(found)
+    if found then
+      vim.schedule(function() M._zellij_tab_alive = true end)
+      return
+    end
+    vim.schedule(function()
+      legacy.pick_paths(function(paths)
+        zellij.spawn(paths, function(ok, stderr)
+          vim.schedule(function()
+            if not ok then
+              notify_err("new-tab failed: " .. (stderr ~= "" and stderr or "unknown"))
+              return
+            end
+            M._zellij_tab_alive = true
+          end)
+        end)
       end)
     end)
   end)

@@ -47,7 +47,8 @@ ZELLIJ` before launching to bypass zellij's nesting guard.
 
 | Command | zellij path | legacy path |
 |---------|---|---|
-| `:FourClaude` / `:FourClaudeToggle` | Create / focus the fourclaude nvim tab (preset picker on first open) | Open / toggle the 4-pane nvim tab |
+| `:FourClaude` | Always open a new fourclaude tab (preset picker) | Same |
+| `:FourClaudeToggle` | If current tab is a fourclaude tab, close it; otherwise open a new one | Same |
 | `:FourClaudeClose` | Close the fourclaude tab (SIGHUPs zellij, takes out the 4 claudes) | Close current tab's terminals |
 | `:FourClaudeCloseAll` | Close all fourclaude tabs | same |
 | `:FourClaudePresets` | Manage preset 4-directory lists for the current cwd | same |
@@ -87,7 +88,7 @@ brew install zellij
 
 No outer zellij session required. You can start nvim however you want —
 directly from the terminal, via tmux, or inside your usual zellij — and
-`<leader>C` will open its own embedded zellij inside a `:terminal`.
+`<leader>C` will spawn an embedded zellij inside a new `:terminal` tab.
 
 ### First-time setup (optional)
 
@@ -101,10 +102,12 @@ Idempotent.
 
 ### Daily use
 
-- `<leader>C` from anywhere → focuses the fourclaude tab, creating it
-  (with preset picker) if it doesn't exist. Nvim lands you in terminal
+- `<leader>C` from a non-fourclaude tab → opens a new fourclaude tab
+  (preset picker on first open for this cwd). Nvim lands you in terminal
   mode on the embedded zellij.
+- `<leader>C` from inside a fourclaude tab → closes that fourclaude tab.
 - Leave terminal mode with `<C-\><C-n>` to use nvim navigation.
+- Multiple fourclaude tabs can coexist — `:FourClaudeCloseAll` to clean up.
 - Inside fourclaude, use zellij's native keys:
   - `Ctrl+p` + `h/j/k/l` — switch between the 4 claude panes
   - `Alt+f` (or `Ctrl+p` + `f`) — zoom a pane

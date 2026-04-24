@@ -37,19 +37,26 @@ local function notify_err(msg)
              { title = "Four Claude" })
 end
 
--- Zellij-path open: focus the existing fourclaude tab if any, else run
--- the preset picker and spawn a new one.
-local function zellij_open()
-  local tab = zellij.find_instance()
-  if tab then
-    vim.api.nvim_set_current_tabpage(tab)
-    vim.cmd("startinsert")
-    return
-  end
+-- Always spawn a new fourclaude tab (picker + embedded zellij). No
+-- focus-existing shortcut — matches legacy's M.open semantics so multiple
+-- fourclaude tabs can coexist across both backends.
+local function zellij_open_new()
   legacy.pick_paths(function(paths)
     local _, err = zellij.open(paths, legacy.config.cmd or "claude")
     if err then notify_err(err) end
   end)
+end
+
+-- Toggle: if the current tab is itself a fourclaude tab, close it;
+-- otherwise spawn a new one. Mirrors legacy.M.toggle so <leader>C behaves
+-- the same across platforms.
+local function zellij_toggle()
+  local cur = vim.api.nvim_get_current_tabpage()
+  if zellij.is_fourclaude_tab(cur) then
+    zellij.close(cur)
+    return
+  end
+  zellij_open_new()
 end
 
 local function zellij_close()
@@ -63,9 +70,10 @@ end
 
 local function register_zellij_commands()
   local ucmd = vim.api.nvim_create_user_command
-  ucmd("FourClaude", zellij_open, { desc = "Open fourclaude (embedded zellij)" })
-  ucmd("FourClaudeToggle", zellij_open,
-       { desc = "Open / focus fourclaude (creates if missing)" })
+  ucmd("FourClaude", zellij_open_new,
+       { desc = "Open a new fourclaude tab (embedded zellij)" })
+  ucmd("FourClaudeToggle", zellij_toggle,
+       { desc = "Open new fourclaude, or close current one if in a fourclaude tab" })
   ucmd("FourClaudeClose", zellij_close,
        { desc = "Close the fourclaude tab (SIGHUPs zellij + 4 claudes)" })
   ucmd("FourClaudeCloseAll", function() zellij.close_all() end,
@@ -121,7 +129,7 @@ function M.setup(opts)
 end
 
 function M.open()
-  if use_zellij() then return zellij_open() end
+  if use_zellij() then return zellij_open_new() end
   return legacy.open()
 end
 
@@ -136,7 +144,7 @@ function M.close_all()
 end
 
 function M.toggle()
-  if use_zellij() then return zellij_open() end
+  if use_zellij() then return zellij_toggle() end
   return legacy.toggle()
 end
 

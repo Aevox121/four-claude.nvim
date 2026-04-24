@@ -21,6 +21,10 @@ local M = {}
 local defaults = {
   -- nil = auto-detect (zellij iff the binary is available)
   use_zellij = nil,
+  -- Agents are declared on legacy.config (shared between both backends).
+  -- See legacy.lua defaults; the user's setup opts are passed straight
+  -- through, so `setup({ agents = {...}, default_agent = "..." })` lives
+  -- in legacy.config.agents after setup().
 }
 
 M.config = {}
@@ -40,23 +44,25 @@ end
 -- Always spawn a new fourclaude tab (picker + embedded zellij). No
 -- focus-existing shortcut — matches legacy's M.open semantics so multiple
 -- fourclaude tabs can coexist across both backends.
-local function zellij_open_new()
+local function zellij_open_new(agent_arg)
+  local info, err = legacy.resolve_agent(agent_arg)
+  if not info then notify_err(err); return end
   legacy.pick_paths(function(paths)
-    local _, err = zellij.open(paths, legacy.config.cmd or "claude")
-    if err then notify_err(err) end
-  end)
+    local _, e = zellij.open(paths, info.cmd, info.name)
+    if e then notify_err(e) end
+  end, info.name)
 end
 
 -- Toggle: if the current tab is itself a fourclaude tab, close it;
 -- otherwise spawn a new one. Mirrors legacy.M.toggle so <leader>C behaves
 -- the same across platforms.
-local function zellij_toggle()
+local function zellij_toggle(agent_arg)
   local cur = vim.api.nvim_get_current_tabpage()
   if zellij.is_fourclaude_tab(cur) then
     zellij.close(cur)
     return
   end
-  zellij_open_new()
+  zellij_open_new(agent_arg)
 end
 
 local function zellij_close()
@@ -70,16 +76,27 @@ end
 
 local function register_zellij_commands()
   local ucmd = vim.api.nvim_create_user_command
-  ucmd("FourClaude", zellij_open_new,
-       { desc = "Open a new fourclaude tab (embedded zellij)" })
-  ucmd("FourClaudeToggle", zellij_toggle,
-       { desc = "Open new fourclaude, or close current one if in a fourclaude tab" })
+  local complete_agents = function() return legacy.agent_names() end
+
+  ucmd("FourClaude", function(c) zellij_open_new(c.args) end, {
+    desc = "Open a new fourclaude tab (optional agent name)",
+    nargs = "?",
+    complete = complete_agents,
+  })
+  ucmd("FourClaudeToggle", function(c) zellij_toggle(c.args) end, {
+    desc = "Open new fourclaude, or close current one if in a fourclaude tab (optional agent name)",
+    nargs = "?",
+    complete = complete_agents,
+  })
   ucmd("FourClaudeClose", zellij_close,
-       { desc = "Close the fourclaude tab (SIGHUPs zellij + 4 claudes)" })
+       { desc = "Close the fourclaude tab (SIGHUPs zellij + 4 agents)" })
   ucmd("FourClaudeCloseAll", function() zellij.close_all() end,
        { desc = "Close all fourclaude tabs" })
-  ucmd("FourClaudePresets", function() legacy.manage_presets() end,
-       { desc = "Manage Four Claude presets" })
+  ucmd("FourClaudePresets", function(c) legacy.manage_presets(c.args) end, {
+    desc = "Manage Four Claude presets (optional agent name)",
+    nargs = "?",
+    complete = complete_agents,
+  })
   ucmd("FourClaudeInstallNotifications", function()
     require("four-claude.notifications").install()
   end, { desc = "Install OS-native Claude Code notification hooks" })
@@ -128,9 +145,9 @@ function M.setup(opts)
   end
 end
 
-function M.open()
-  if use_zellij() then return zellij_open_new() end
-  return legacy.open()
+function M.open(agent)
+  if use_zellij() then return zellij_open_new(agent) end
+  return legacy.open(agent)
 end
 
 function M.close()
@@ -143,9 +160,9 @@ function M.close_all()
   return legacy.close_all()
 end
 
-function M.toggle()
-  if use_zellij() then return zellij_toggle() end
-  return legacy.toggle()
+function M.toggle(agent)
+  if use_zellij() then return zellij_toggle(agent) end
+  return legacy.toggle(agent)
 end
 
 function M.is_open()
@@ -158,6 +175,6 @@ function M.status()
   return legacy.status()
 end
 
-function M.manage_presets() return legacy.manage_presets() end
+function M.manage_presets(agent) return legacy.manage_presets(agent) end
 
 return M

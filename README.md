@@ -35,29 +35,54 @@ ZELLIJ` before launching to bypass zellij's nesting guard.
   config = function()
     require("four-claude").setup({
       -- use_zellij = nil,  -- nil (default) = auto; true = force; false = never
+
+      -- Declare one or more agents; a tab's 4 panes all run the same agent.
+      agents = {
+        claude   = { cmd = "claude" },
+        opencode = { cmd = "opencode" },
+        codex    = { cmd = "codex" },
+      },
+      default_agent = "claude",
     })
   end,
   keys = {
-    { "<leader>C", "<cmd>FourClaudeToggle<cr>", desc = "Show fourclaude" },
+    { "<leader>C", "<cmd>FourClaudeToggle<cr>",          desc = "Toggle fourclaude (default agent)" },
+    { "<leader>cO", "<cmd>FourClaudeToggle opencode<cr>", desc = "Toggle fourclaude (opencode)" },
+    { "<leader>cX", "<cmd>FourClaudeToggle codex<cr>",    desc = "Toggle fourclaude (codex)" },
   },
 }
 ```
 
+Backward-compat: the old single-`cmd` form is still accepted and folds
+into `agents[default_agent].cmd`, so existing configs keep working.
+
+```lua
+-- Equivalent to agents = { claude = { cmd = "myclaude" } }, default_agent = "claude"
+require("four-claude").setup({ cmd = "myclaude" })
+```
+
 ## Commands
+
+All open/toggle/presets commands take an optional agent name (tab-completed
+from the keys of your `agents` table). Omit it to use `default_agent`.
 
 | Command | zellij path | legacy path |
 |---------|---|---|
-| `:FourClaude` | Always open a new fourclaude tab (preset picker) | Same |
-| `:FourClaudeToggle` | If current tab is a fourclaude tab, close it; otherwise open a new one | Same |
-| `:FourClaudeClose` | Close the fourclaude tab (SIGHUPs zellij, takes out the 4 claudes) | Close current tab's terminals |
+| `:FourClaude [agent]` | Always open a new fourclaude tab (preset picker) | Same |
+| `:FourClaudeToggle [agent]` | If current tab is a fourclaude tab, close it; otherwise open a new one | Same |
+| `:FourClaudeClose` | Close the fourclaude tab (SIGHUPs zellij, takes out the 4 agents) | Close current tab's terminals |
 | `:FourClaudeCloseAll` | Close all fourclaude tabs | same |
-| `:FourClaudePresets` | Manage preset 4-directory lists for the current cwd | same |
+| `:FourClaudePresets [agent]` | Manage preset 4-directory lists for the current cwd (per-agent) | same |
 | `:FourClaudeInstallNotifications` | Install OS-native Claude Code `Notification` / `Stop` hooks | — |
 | `:FourClaudeZoom` / `:FourClaudePin` | Hint (use zellij's `Alt+f` / `Ctrl+p n` instead) | Zoom current pane / pin a pane to sidebar |
 
+Presets are scoped per `(cwd, agent)`, so `:FourClaude opencode` doesn't
+clutter the claude picker and vice-versa.
+
 ## Lualine indicator
 
-Shows `● Claude` in the statusline whenever fourclaude is alive.
+Shows a per-agent marker (e.g. `● claude`, `● opencode×2`) in the
+statusline whenever any fourclaude tab is alive.
 
 ```lua
 {

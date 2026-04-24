@@ -5,7 +5,14 @@ local uv = vim.uv or vim.loop
 M.instances = {} -- tab_handle -> instance
 
 local defaults = {
-  cmd = "claude",
+  -- Named agent commands. `<leader>C` / `:FourClaude [agent]` picks one; all
+  -- 4 panes in a tab run the same agent. Top-level `cmd` is still accepted
+  -- for backwards compat and is folded into agents[default_agent] in
+  -- setup_config.
+  agents = {
+    claude = { cmd = "claude" },
+  },
+  default_agent = "claude",
   stagger_ms = 2000,
   max_presets = 5,
   pin_key = "<leader>cp",
@@ -40,9 +47,42 @@ local function save_presets_file(data)
   f:close()
 end
 
-local function save_preset(root, paths)
+-- Preset file format:
+--   v2 (current): { [cwd] = { [agent_name] = { [paths1], [paths2], ... } } }
+--   v1 (legacy):  { [cwd] = { [paths1], [paths2], ... } }
+-- v1 entries are auto-migrated on read into v2 under default_agent, so old
+-- files keep working and the next write upgrades them in place.
+local function is_v1_entry(entry)
+  return type(entry) == "table" and type(entry[1]) == "table"
+      and type(entry[1][1]) == "string"
+end
+
+local function migrate_entry(entry)
+  if not is_v1_entry(entry) then return entry or {} end
+  local default = (M.config and M.config.default_agent) or "claude"
+  return { [default] = entry }
+end
+
+local function get_presets(root, agent)
   local all = load_presets()
-  local list = all[root] or {}
+  local entry = migrate_entry(all[root])
+  return entry[agent] or {}
+end
+
+local function set_presets(root, agent, list)
+  local all = load_presets()
+  local entry = migrate_entry(all[root])
+  entry[agent] = (#list > 0) and list or nil
+  if next(entry) == nil then
+    all[root] = nil
+  else
+    all[root] = entry
+  end
+  save_presets_file(all)
+end
+
+local function save_preset(root, paths, agent)
+  local list = get_presets(root, agent)
   local entry = { paths[1], paths[2], paths[3], paths[4] }
 
   for i = #list, 1, -1 do
@@ -59,8 +99,7 @@ local function save_preset(root, paths)
     table.remove(list)
   end
 
-  all[root] = list
-  save_presets_file(all)
+  set_presets(root, agent, list)
 end
 
 ----------------------------------------------------------------------
@@ -686,32 +725,80 @@ end
 -- the init.lua dispatcher can share this config with the zellij path (which
 -- still uses legacy.pick_paths / preset helpers that read M.config).
 function M.setup_config(opts)
-  M.config = vim.tbl_deep_extend("force", defaults, opts or {})
+  opts = opts or {}
+  M.config = vim.tbl_deep_extend("force", defaults, opts)
+  -- Backward compat: top-level `cmd` folds into the default agent's cmd so
+  -- old `setup({ cmd = "claude" })` configs keep working.
+  if opts.cmd then
+    local a = M.config.default_agent
+    M.config.agents = M.config.agents or {}
+    M.config.agents[a] = M.config.agents[a] or {}
+    M.config.agents[a].cmd = opts.cmd
+  end
+  -- Guarantee default_agent points at an existing agent entry.
+  if not (M.config.agents and M.config.agents[M.config.default_agent]) then
+    local first = next(M.config.agents or {})
+    if first then M.config.default_agent = first end
+  end
+end
+
+-- Sorted list of configured agent names (for command completion).
+function M.agent_names()
+  local names = {}
+  for name in pairs(M.config.agents or {}) do table.insert(names, name) end
+  table.sort(names)
+  return names
+end
+
+-- Look up an agent by name (nil = default). Returns (info, err) where
+-- info = { name = "...", cmd = "..." }.
+function M.resolve_agent(name)
+  name = (name and name ~= "") and name or M.config.default_agent
+  local entry = M.config.agents and M.config.agents[name]
+  if not entry then
+    return nil, "unknown agent '" .. tostring(name) ..
+      "' (configured: " .. table.concat(M.agent_names(), ", ") .. ")"
+  end
+  return { name = name, cmd = entry.cmd or name }, nil
 end
 
 function M.setup(opts)
   M.setup_config(opts)
   setup_highlights()
 
-  vim.api.nvim_create_user_command("FourClaude", function()
-    M.open()
-  end, { desc = "Open 4 Claude terminals in a new tab" })
+  local function complete_agents() return M.agent_names() end
+
+  vim.api.nvim_create_user_command("FourClaude", function(cmd)
+    M.open(cmd.args)
+  end, {
+    desc = "Open 4 agent terminals in a new tab (optional agent name)",
+    nargs = "?",
+    complete = complete_agents,
+  })
 
   vim.api.nvim_create_user_command("FourClaudeClose", function()
     M.close()
   end, { desc = "Close current tab's Claude terminals" })
 
-  vim.api.nvim_create_user_command("FourClaudeToggle", function()
-    M.toggle()
-  end, { desc = "Toggle current tab's Claude terminals" })
+  vim.api.nvim_create_user_command("FourClaudeToggle", function(cmd)
+    M.toggle(cmd.args)
+  end, {
+    desc = "Toggle current tab's agent terminals (optional agent name)",
+    nargs = "?",
+    complete = complete_agents,
+  })
 
   vim.api.nvim_create_user_command("FourClaudeCloseAll", function()
     M.close_all()
   end, { desc = "Close all Four Claude instances" })
 
-  vim.api.nvim_create_user_command("FourClaudePresets", function()
-    M.manage_presets()
-  end, { desc = "Manage Four Claude presets" })
+  vim.api.nvim_create_user_command("FourClaudePresets", function(cmd)
+    M.manage_presets(cmd.args)
+  end, {
+    desc = "Manage Four Claude presets (optional agent name)",
+    nargs = "?",
+    complete = complete_agents,
+  })
 
   vim.api.nvim_create_user_command("FourClaudeZoom", function()
     M.zoom_toggle()
@@ -734,31 +821,43 @@ function M.is_open()
 end
 
 --- Lualine-friendly status string.
---- Returns "" when no live instances, "● Claude" for one, "● Claude×N" for more.
+--- Returns "" when no live instances, else one chunk per agent such as
+--- "● claude" or "● claude×2 ● opencode".
 function M.status()
-  local count = 0
+  local by_agent = {}
   for _, inst in pairs(M.instances) do
     if inst.tab and vim.api.nvim_tabpage_is_valid(inst.tab) then
-      count = count + 1
+      local name = inst.agent or "claude"
+      by_agent[name] = (by_agent[name] or 0) + 1
     end
   end
-  if count == 0 then return "" end
-  if count == 1 then return "● Claude" end
-  return "● Claude×" .. count
+  if next(by_agent) == nil then return "" end
+  local names = {}
+  for name in pairs(by_agent) do table.insert(names, name) end
+  table.sort(names)
+  local parts = {}
+  for _, name in ipairs(names) do
+    local n = by_agent[name]
+    table.insert(parts, (n == 1) and ("● " .. name) or ("● " .. name .. "×" .. n))
+  end
+  return table.concat(parts, " ")
 end
 
 -- Runs the preset/custom picker UI and invokes callback(paths) once the user
 -- has committed to 4 paths. Does nothing if the user cancels. Shared between
 -- the legacy path (callback = M._launch) and the zellij path (callback =
 -- zellij_spawn) in init.lua.
-function M.pick_paths(callback)
+-- pick_paths(callback, agent) — runs the preset/custom picker UI for the
+-- given agent and invokes callback(paths) once 4 paths are chosen. Does
+-- nothing if the user cancels. `agent` defaults to the configured default.
+function M.pick_paths(callback, agent)
+  agent = (agent and agent ~= "") and agent or M.config.default_agent
   local root = vim.fn.getcwd()
-  local all_presets = load_presets()
-  local presets = all_presets[root] or {}
+  local presets = get_presets(root, agent)
 
   local function do_custom()
     pick_paths_custom(function(paths)
-      save_preset(root, paths)
+      save_preset(root, paths, agent)
       callback(paths)
     end)
   end
@@ -776,7 +875,7 @@ function M.pick_paths(callback)
   table.insert(choices, { type = "manage" })
 
   vim.ui.select(choices, {
-    prompt = "Four Claude - select preset or customize:",
+    prompt = "Four Claude (" .. agent .. ") - select preset or customize:",
     format_item = function(item)
       if item.type == "custom" then
         return "✚ New custom..."
@@ -790,30 +889,36 @@ function M.pick_paths(callback)
     if choice.type == "custom" then
       do_custom()
     elseif choice.type == "manage" then
-      M.manage_presets()
+      M.manage_presets(agent)
     else
       local paths = {}
       for i, p in ipairs(choice.paths) do paths[i] = p end
-      save_preset(root, paths)
+      save_preset(root, paths, agent)
       callback(paths)
     end
   end)
 end
 
-function M.open()
-  M.pick_paths(M._launch)
+function M.open(agent)
+  local info, err = M.resolve_agent(agent)
+  if not info then
+    vim.notify("Four Claude: " .. err, vim.log.levels.ERROR, { title = "Four Claude" })
+    return
+  end
+  M.pick_paths(function(paths) M._launch(paths, info) end, info.name)
 end
 
 ----------------------------------------------------------------------
 -- Preset management
 ----------------------------------------------------------------------
-function M.manage_presets()
+function M.manage_presets(agent)
+  agent = (agent and agent ~= "") and agent or M.config.default_agent
   local root = vim.fn.getcwd()
-  local all = load_presets()
-  local presets = all[root] or {}
+  local presets = get_presets(root, agent)
 
   if #presets == 0 then
-    vim.notify("No presets for this project", vim.log.levels.INFO, { title = "Four Claude" })
+    vim.notify("No presets for this project (" .. agent .. ")",
+      vim.log.levels.INFO, { title = "Four Claude" })
     return
   end
 
@@ -823,7 +928,7 @@ function M.manage_presets()
   end
 
   vim.ui.select(choices, {
-    prompt = "Manage presets - select one to edit/delete:",
+    prompt = "Manage presets (" .. agent .. ") - select one to edit/delete:",
     format_item = function(item)
       return item.index .. ". " .. format_preset(item.paths, root)
     end,
@@ -837,11 +942,10 @@ function M.manage_presets()
 
       if action == "Delete" then
         table.remove(presets, choice.index)
-        all[root] = #presets > 0 and presets or nil
-        save_presets_file(all)
+        set_presets(root, agent, presets)
         vim.notify("Preset deleted", vim.log.levels.INFO, { title = "Four Claude" })
         if #presets > 0 then
-          vim.schedule(function() M.manage_presets() end)
+          vim.schedule(function() M.manage_presets(agent) end)
         end
 
       elseif action == "Edit" then
@@ -850,8 +954,7 @@ function M.manage_presets()
         local function edit_path(i)
           if i > 4 then
             presets[choice.index] = new_paths
-            all[root] = presets
-            save_presets_file(all)
+            set_presets(root, agent, presets)
             vim.notify("Preset updated", vim.log.levels.INFO, { title = "Four Claude" })
             return
           end
@@ -874,11 +977,24 @@ end
 ----------------------------------------------------------------------
 -- Launch grid
 ----------------------------------------------------------------------
-function M._launch(paths)
+function M._launch(paths, info)
+  -- Callers that came through M.open always pass info. Anyone calling
+  -- _launch directly (e.g. historical usage, tests) falls back to the
+  -- default agent.
+  if not info then
+    local resolved, err = M.resolve_agent(nil)
+    if not resolved then
+      vim.notify("Four Claude: " .. err, vim.log.levels.ERROR, { title = "Four Claude" })
+      return
+    end
+    info = resolved
+  end
   local inst = {
     bufs = {},
     wins = {},
     paths = paths,
+    agent = info.name,
+    cmd = info.cmd,
     tab = nil,
     augroup = nil,
     buf_monitor = {},
@@ -965,7 +1081,7 @@ function M._launch(paths)
     vim.api.nvim_set_current_win(win)
     local job_id = vim.fn.termopen(vim.o.shell, { cwd = paths[index] })
     vim.defer_fn(function()
-      pcall(vim.fn.chansend, job_id, M.config.cmd .. "\r")
+      pcall(vim.fn.chansend, job_id, inst.cmd .. "\r")
     end, 500)
     local buf = vim.api.nvim_get_current_buf()
     inst.bufs[index] = buf
@@ -1099,11 +1215,11 @@ function M.close_all()
   maybe_stop_poll_timer()
 end
 
-function M.toggle()
+function M.toggle(agent)
   if M.is_open() then
     M.close()
   else
-    M.open()
+    M.open(agent)
   end
 end
 

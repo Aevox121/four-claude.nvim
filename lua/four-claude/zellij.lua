@@ -137,7 +137,9 @@ end
 
 -- Opens a new nvim tab hosting a :terminal running the embedded zellij.
 -- Returns the tab handle on success, or (nil, err) on failure.
-function M.open(paths, cmd)
+-- `agent_name` is purely cosmetic (winbar + status) — what actually runs
+-- inside the panes is `cmd`.
+function M.open(paths, cmd, agent_name)
   local kdl, err = M.write_kdl(paths, cmd)
   if not kdl then return nil, "kdl write failed: " .. tostring(err) end
 
@@ -156,8 +158,8 @@ function M.open(paths, cmd)
   end
 
   vim.bo[buf].buflisted = false
-  vim.wo.winbar = "● Four Claude"
-  M.instances[tab] = { buf = buf, job = job }
+  vim.wo.winbar = "● " .. (agent_name or "Four Claude")
+  M.instances[tab] = { buf = buf, job = job, agent = agent_name, cmd = cmd }
 
   -- Buffer-local terminal-mode keymaps so nvim can catch tab-navigation
   -- and a terminal-mode exit before keys reach the embedded zellij.
@@ -211,7 +213,23 @@ function M.close_all()
 end
 
 function M.status()
-  return M.is_open() and "● Claude" or ""
+  local by_agent = {}
+  for tab, inst in pairs(M.instances) do
+    if vim.api.nvim_tabpage_is_valid(tab) then
+      local name = inst.agent or "claude"
+      by_agent[name] = (by_agent[name] or 0) + 1
+    end
+  end
+  if next(by_agent) == nil then return "" end
+  local names = {}
+  for name in pairs(by_agent) do table.insert(names, name) end
+  table.sort(names)
+  local parts = {}
+  for _, name in ipairs(names) do
+    local n = by_agent[name]
+    table.insert(parts, (n == 1) and ("● " .. name) or ("● " .. name .. "×" .. n))
+  end
+  return table.concat(parts, " ")
 end
 
 return M

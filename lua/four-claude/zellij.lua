@@ -162,15 +162,16 @@ function M.open(paths, cmd)
   -- Buffer-local terminal-mode keymaps so nvim can catch tab-navigation
   -- and a terminal-mode exit before keys reach the embedded zellij.
   --   <C-]>     exit terminal mode (pairs with nvim's default <C-\><C-n>)
-  --   <M-[>     :tabprevious — stays out of zellij's Alt+h/l pane-switch
-  --   <M-]>     :tabnext
+  --   <M-,>     :tabprevious — avoids zellij's Alt+h/l pane-switch AND the
+  --             CSI-prefix ambiguity that <M-[> has with arrow keys
+  --   <M-.>     :tabnext
   -- <M-…> mappings require macos-option-as-alt=true in the outer terminal.
   local km_opts = { buffer = buf, silent = true }
   vim.keymap.set("t", "<C-]>", [[<C-\><C-n>]],
     vim.tbl_extend("force", km_opts, { desc = "Exit terminal mode" }))
-  vim.keymap.set("t", "<M-[>", "<cmd>tabprevious<cr>",
+  vim.keymap.set("t", "<M-,>", "<cmd>tabprevious<cr>",
     vim.tbl_extend("force", km_opts, { desc = "Previous nvim tab" }))
-  vim.keymap.set("t", "<M-]>", "<cmd>tabnext<cr>",
+  vim.keymap.set("t", "<M-.>", "<cmd>tabnext<cr>",
     vim.tbl_extend("force", km_opts, { desc = "Next nvim tab" }))
 
   vim.cmd("startinsert")

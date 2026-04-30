@@ -1,5 +1,15 @@
 # four-claude.nvim
 
+> **Branches**
+> - `macos-zellij` (this branch) — current development line. zellij + legacy
+>   dispatcher; required for macOS / Linux to get the zellij path. Windows
+>   users can also track this branch (legacy path is preserved).
+> - `main` — frozen at the pre-zellij implementation (Windows-only legacy
+>   4-terminal grid). Kept for backward compatibility; no README.
+>
+> If you're on a fresh install, point lazy.nvim at `branch = "macos-zellij"`
+> (see [Installation](#installation-lazynvim)).
+
 Manage a 4-pane Claude Code workspace from Neovim, with two backends:
 
 - **zellij path** (auto when `zellij` is on PATH) — opens a new nvim tab
@@ -31,6 +41,7 @@ ZELLIJ` before launching to bypass zellij's nesting guard.
 ```lua
 {
   "Aevox121/four-claude.nvim",
+  branch = "macos-zellij",  -- omit only if you intentionally want the frozen main
   main = "four-claude",
   config = function()
     require("four-claude").setup({

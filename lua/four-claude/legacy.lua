@@ -11,6 +11,7 @@ local defaults = {
   -- setup_config.
   agents = {
     claude = { cmd = "claude" },
+    codex = { cmd = "codex --yolo" },
   },
   default_agent = "claude",
   stagger_ms = 2000,

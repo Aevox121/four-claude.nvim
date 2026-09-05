@@ -10,7 +10,7 @@
 > If you're on a fresh install, point lazy.nvim at `branch = "macos-zellij"`
 > (see [Installation](#installation-lazynvim)).
 
-Manage a 4-pane Claude Code workspace from Neovim, with two backends:
+Manage a 4-pane Claude Code or Codex workspace from Neovim, with two backends:
 
 - **zellij path** (auto when `zellij` is on PATH) — opens a new nvim tab
   containing a single `:terminal` buffer that runs an ephemeral
@@ -29,7 +29,7 @@ Backend is selected automatically; override with `use_zellij = true | false` in 
 ## Requirements
 
 - Neovim ≥ 0.10
-- Claude Code CLI (`claude`) on PATH
+- At least one supported agent CLI on PATH: Claude Code (`claude`) or Codex (`codex`)
 - For the zellij path: `zellij ≥ 0.40` on PATH
 
 You do **not** need to run nvim inside an outer zellij session. The
@@ -51,7 +51,7 @@ ZELLIJ` before launching to bypass zellij's nesting guard.
       agents = {
         claude   = { cmd = "claude" },
         opencode = { cmd = "opencode" },
-        codex    = { cmd = "codex" },
+        codex    = { cmd = "codex --yolo" },
       },
       default_agent = "claude",
     })
@@ -59,13 +59,18 @@ ZELLIJ` before launching to bypass zellij's nesting guard.
   keys = {
     { "<leader>C", "<cmd>FourClaudeToggle<cr>",          desc = "Toggle fourclaude (default agent)" },
     { "<leader>cO", "<cmd>FourClaudeToggle opencode<cr>", desc = "Toggle fourclaude (opencode)" },
-    { "<leader>cX", "<cmd>FourClaudeToggle codex<cr>",    desc = "Toggle fourclaude (codex)" },
+    { "<leader>cX", "<cmd>FourCodexToggle<cr>",           desc = "Toggle fourcodex" },
   },
 }
 ```
 
 Backward-compat: the old single-`cmd` form is still accepted and folds
 into `agents[default_agent].cmd`, so existing configs keep working.
+
+`claude` and `codex` are built in. Codex defaults to `codex --yolo`. The
+`agents` table above only needs to mention built-in agents when you want to
+override their command or flags; other agents such as `opencode` still need
+to be declared explicitly.
 
 ```lua
 -- Equivalent to agents = { claude = { cmd = "myclaude" } }, default_agent = "claude"
@@ -84,11 +89,18 @@ from the keys of your `agents` table). Omit it to use `default_agent`.
 | `:FourClaudeClose` | Close the fourclaude tab (SIGHUPs zellij, takes out the 4 agents) | Close current tab's terminals |
 | `:FourClaudeCloseAll` | Close all fourclaude tabs | same |
 | `:FourClaudePresets [agent]` | Manage preset 4-directory lists for the current cwd (per-agent) | same |
+| `:FourCodex` | Alias for `:FourClaude codex` | Same |
+| `:FourCodexToggle` | Alias for `:FourClaudeToggle codex` | Same |
+| `:FourCodexPresets` | Alias for `:FourClaudePresets codex` | Same |
 | `:FourClaudeInstallNotifications` | Install OS-native Claude Code `Notification` / `Stop` hooks | — |
 | `:FourClaudeZoom` / `:FourClaudePin` | Hint (use zellij's `Alt+f` / `Ctrl+p n` instead) | Zoom current pane / pin a pane to sidebar |
 
 Presets are scoped per `(cwd, agent)`, so `:FourClaude opencode` doesn't
 clutter the claude picker and vice-versa.
+
+Close, close-all, zoom, and pin operate on the current workspace rather than
+on a particular agent, so Codex uses the existing `:FourClaudeClose`,
+`:FourClaudeCloseAll`, `:FourClaudeZoom`, and `:FourClaudePin` commands.
 
 ## Lualine indicator
 

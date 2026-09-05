@@ -126,6 +126,24 @@ local function register_zellij_autocmds()
   })
 end
 
+-- Codex gets first-class commands without duplicating the implementation or
+-- forcing users to remember the generic `:FourClaude ... codex` form. The
+-- lifecycle commands (close / close-all / pin / zoom) remain shared because
+-- they operate on the current four-agent workspace, regardless of its agent.
+local function register_codex_commands()
+  local ucmd = vim.api.nvim_create_user_command
+
+  ucmd("FourCodex", function() M.open("codex") end, {
+    desc = "Open 4 Codex terminals in a new tab",
+  })
+  ucmd("FourCodexToggle", function() M.toggle("codex") end, {
+    desc = "Open 4 Codex terminals, or close the current four-agent tab",
+  })
+  ucmd("FourCodexPresets", function() M.manage_presets("codex") end, {
+    desc = "Manage Four Codex presets",
+  })
+end
+
 --- Public API ---------------------------------------------------------------
 
 function M.setup(opts)
@@ -143,6 +161,8 @@ function M.setup(opts)
   else
     legacy.setup(opts)
   end
+
+  register_codex_commands()
 end
 
 function M.open(agent)
